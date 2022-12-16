@@ -84,8 +84,93 @@ Matrix<T, N>::Matrix(Matrix_initializer<T, N> init)
 
 // ------------------------------
 // Element Accessors
+
+// ------------------------------
+// Arithmetic operations on the matrix
+
+/**
+ * @brief Accepts a function to apply to each element of this Matrix.
+ *
+ * @tparam T type of elements
+ * @tparam N number of dimensions
+ * @tparam F Function that can be applied to an reference element of type T
+ * @param f a function that accepts a reference of type T and modifies the variable behind the reference.
+ * @return Matrix<T, N>& this matrix after modification, allowing chained operations
+ */
 template <typename T, size_t N>
-Matrix_ref<T, N - 1> Matrix<T, N>::operator[](size_t n)
+template <typename F>
+Matrix<T, N> &Matrix<T, N>::apply(F f)
 {
-    return row(n);
+    for (auto &x : elems)
+        f(x);
+    return *this;
 }
+
+template <typename T, size_t N>
+template <typename M, typename F>
+Enable_if<Matrix_type<M>(), Matrix<T, N> &> Matrix<T, N>::apply(M &m, F f)
+{
+    assert(same_extents(desc, m.descriptor()));
+    for (auto i = begin(), j = m.begin(); i != end(); ++i, ++j)
+        f(*i, *j);
+    return *this;
+}
+
+template <typename T, size_t N>
+Matrix<T, N> &Matrix<T, N>::operator+=(const T &val)
+{
+    return apply([&](T &a)
+                 { a += val; });
+}
+
+template <typename T, size_t N>
+Matrix<T, N> &Matrix<T, N>::operator-=(const T &val)
+{
+    return apply([&](T &a)
+                 { a -= val; });
+}
+
+template <typename T, size_t N>
+Matrix<T, N> &Matrix<T, N>::operator*=(const T &val)
+{
+    return apply([&](T &a)
+                 { a *= val; });
+}
+
+template <typename T, size_t N>
+Matrix<T, N> &Matrix<T, N>::operator/=(const T &val)
+{
+    return apply([&](T &a)
+                 { a /= val; });
+}
+
+template <typename T, size_t N>
+Matrix<T, N> &Matrix<T, N>::operator%=(const T &val)
+{
+    return apply([&](T &a)
+                 { a %= val; });
+}
+
+template <typename T, size_t N>
+template <typename M>
+Enable_if<Matrix_type<M>(), Matrix<T, N> &> Matrix<T, N>::operator+=(const M &m)
+{
+    static_assert(m.order() == N, "+=: mismatched Matrix dimensions");
+    assert(same_extents(desc, m.descriptor()));
+
+    return apply(m, [](T &a, Value_type<M> &b)
+                 { a += b; });
+}
+
+template <typename T, size_t N>
+template <typename M>
+Enable_if<Matrix_type<M>(), Matrix<T, N> &> Matrix<T, N>::operator-=(const M &m)
+{
+    static_assert(m.order() == N, "+=: mismatched Matrix dimensions");
+    assert(same_extents(desc, m.descriptor()));
+
+    return apply(m, [](T &a, Value_type<M> &b)
+                 { a -= b; });
+}
+
+// Defining Common_type results for operator +

@@ -43,6 +43,9 @@ namespace utils
     // Check if a function should exist
     template <bool B, typename T>
     using Enable_if = typename std::enable_if<B, T>::type; // Enable the declaration of a function IFF the boolean condition is true.
+    
+    template <typename T, typename T2>
+    using Common_type = typename std::common_type<T, T2>::type;
 
     template <typename T>
     bool Is_class()
@@ -150,7 +153,7 @@ namespace utils
         const Matrix_slice<N> &descriptor() const { return desc; }
 
         // ------------------------------
-        // Element Accessors
+        // Element/Submatrix Accessors
 
         // Get element access
         T *data() { return elems.data(); }
@@ -164,7 +167,7 @@ namespace utils
         template <typename... Args>
         Enable_if<Matrix_impl::Requesting_element<Args...>(), const T &> operator()(Args... args) const;
 
-        // m(s1, s2, s3) subscripting with slices
+        // m(s1, s2, s3) subscripting with slices (ROI)
         template <typename... Args>
         Enable_if<Matrix_impl::Requesting_slice<Args...>(), Matrix_ref<T, N>> operator()(const Args &...args);
 
@@ -183,14 +186,63 @@ namespace utils
         Matrix_ref<T, N - 1> col(size_t n);
         Matrix_ref<const T, N - 1> col(size_t n) const;
 
+        // ------------------------------
+        // Arithemtic operations on the matrix
+
+        // f(x) for every element x
+        template <typename F>
+        Matrix &apply(F f);
+
+        // f(x, mx) for corresponding elements
+        template <typename M, typename F>
+        Matrix &apply(const M &m, F f);
+
+        Matrix &operator=(const T &value); // assignment with scalar
+
+        Matrix &operator+=(const T &value); // scalar addition
+        Matrix &operator-=(const T &value); // scalar subtraction
+        Matrix &operator*=(const T &value); // scalar multiplication
+        Matrix &operator/=(const T &value); // scalar division
+        Matrix &operator%=(const T &value); // scalar modulo
+
+        // binary +, -, * as nonmember functions
+        friend Matrix<T, N> operator+(const Matrix<T, N> &a, const T &val);
+        friend Matrix<T, N> operator+(const T &val, const Matrix<T, N> &a);
+        
+        friend Matrix<T, N> operator-(const Matrix<T, N> &a, const T &val);
+        friend Matrix<T, N> operator-(const T &val, const Matrix<T, N> &a);
+
+        friend Matrix<T, N> operator*(const Matrix<T, N> &a, const T &val);
+        friend Matrix<T, N> operator*(const T &val, const Matrix<T, N> &a);
+        
+        friend Matrix<T, N> operator/(const Matrix<T, N> &a, const T &val);
+        friend Matrix<T, N> operator/(const T &val, const Matrix<T, N> &a);
+        
+        friend Matrix<T, N> operator%(const Matrix<T, N> &a, const T &val);
+        friend Matrix<T, N> operator%(const T &val, const Matrix<T, N> &a);
+
+        template <typename M>
+        Matrix &operator+=(const M &x);
+
+        template <typename M>
+        Matrix &operator-=(const M &x);
+
+        template <typename M>
+        Matrix &operator*=(const M &x);
+        
+        // binary +, -, * for Matrixes
+        template<typename T, typename T2, size_t N,
+            typename RT = Matrix<
+
+
         // ...
     };
 
     /**
-     * @brief A reference to a sub-Matrix. This reference does not hold the target Matrix, and thus only have the permission to read.
-     * 
-     * @tparam T 
-     * @tparam N 
+     * @brief A reference to a sub-Matrix, or ROI.
+     *
+     * @tparam T
+     * @tparam N
      */
     template <typename T, size_t N>
     class Matrix_ref
