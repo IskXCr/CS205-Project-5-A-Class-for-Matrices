@@ -1,11 +1,17 @@
 # CS205-Project-5-A-Class-for-Matrices
 CS205 2022-Fall Project 5 - A Class for Matrices
 
+12110804 方嘉玮
+
+## Part 0 - Link
+
+[IskXCr/CS205-Project-5-A-Class-for-Matrices: CS205 2022-Fall Project 5 - A Class for Matrices (github.com)](https://github.com/IskXCr/CS205-Project-5-A-Class-for-Matrices)
+
 ## Part 1 - List of Satisfied Requirements
 
 We aim to provide a compact class for matrices that is both **simple**, **straightforward to use**, and **supports arbitrary data types (that can be stored)**.
 
-* N-dimensions, where `N` is a parameter that can vary from `0` to many, without specialized code for every dimension.
+* ***N-dimensions***, where `N` is a parameter that can vary from `0` to many, without specialized code for every dimension.
   * By supporting N-dimension matrix, matrices with multiple channels are automatically supported.
 * Arbitrary types to store.
 * Basic mathematical operations support, including per-element `+`, `-`,`*`,`/`,`%` for each element (if the type `T` supports) supported by built-in ``apply()`` function, and Matrix operations, including `+` and `*`.
@@ -20,6 +26,11 @@ Defects:
 
 * All operations are written in a single `.hpp` file, because time is limited, and transplanting function with `template`s is hard. If time is enough, they can all be transferred to another `.cpp` file.
   * I believe the idea behind this is more important. That is, the usage of recursive templates and standard library routines, memory management, etc.
+* Class template `Matrix_base` is not abstract enough, leading to copies of codes (between `Matrix_Ref` and `Matrix`, and also those specializations when `N=1` and `N=0` (They are used to speed up the performance, but they also lead to lots of duplicated codes). The usage of `iterator` and `const iterator` should be extracted from `Matrix_ref` and `Matrix` instead of being instantiated from two separate classes.
+  * Haven't considered abstraction to be that difficult, but it turned out to be really difficult.
+* Only basic structure is presented, for example per-element `apply` which applies a lambda function.
+  * Through the use of subscripting, matrix multiplication and other operation can be easily implemented.
+  * The correctness can only be guaranteed on the existing code. Further investigation is needed to complement (or refactor) this project.
 
 
 
@@ -676,7 +687,7 @@ From my experience, it is way better to directly read code written by some famou
 
    ***Solution.*** By defining a template function called `apply(F f)` that accepts a function. In this way, it is easy to manage any operations that independently applies to each element of a `Mat` object. These functions must have **no side-effect**, though (in other words they must can be turned into lambda expressions).
 
-5. 
+5. Other metaprogramming problems and const qualifier problems (really, really disturbing, but also critical for developing correct codes. I have no guarantee that my code is completely correct, and I can only test limited samples.).
 
 
 
