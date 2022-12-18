@@ -210,7 +210,7 @@ namespace utils
         }
 
         /**
-         * @brief checks that the arguments can be cnverted to the required `size_t` using `std::is_convertible`.
+         * @brief checks if the arguments can be cnverted to the required `size_t` using `std::is_convertible`.
          *
          * @tparam Args
          * @return true
@@ -280,6 +280,12 @@ namespace utils
             }
         }
 
+        template <size_t N>
+        bool same_extents(Matrix_slice<N> const &a, Matrix_slice<N> const &b)
+        {
+            return a.extents == b.extents;
+        }
+
     };
 
     template <typename T, size_t N>
@@ -338,12 +344,42 @@ namespace utils
         };
         ~Matrix_slice() = default;
 
+        /**
+         * @brief Construct a new Matrix_slice object from the extents, with start set to 0, and strides and size automatically calculated.
+         *
+         * @param extents
+         */
+        Matrix_slice(std::array<size_t, N> extents)
+        {
+            this->extents = extents;
+            recalc_size();
+            init_full_dim();
+        }
+
+        /**
+         * @brief Refresh this slice with only specified extents
+         *
+         * @param extents
+         * @return Matrix_slice&
+         */
+        Matrix_slice &operator=(std::array<size_t, N> extents)
+        {
+            *this = Matrix_slice<N>(extents);
+            return *this;
+        }
+
+        /**
+         * @brief Construct a new Matrix_slice object from the template, with start set to 0, and strides and size automatically calculated.
+         *
+         * @param extents
+         */
         template <typename... Exts>
         Matrix_slice(Exts... exts)
         {
             static_assert(Matrix_impl::Requesting_element<Exts...>(), "Matrix_slice: invalid dimension argument.");
             extents = {size_t(exts)...};
             recalc_size();
+            init_full_dim();
         }
 
         template <typename... Exts>
@@ -364,6 +400,10 @@ namespace utils
                 *j = offset, offset *= *i;
         }
 
+        /**
+         * @brief Recalculate the size of this slice.
+         *
+         */
         void recalc_size()
         {
             size = 1;
@@ -428,22 +468,9 @@ namespace utils
                 return desc.extents[1];
         }
         size_t size() const { return desc.size; }
-        Matrix_slice<N> descriptor() { return desc; }
+        const Matrix_slice<N> descriptor() const { return desc; }
 
-        // iterator
-
-        // accessors
-
-        // template <typename... Args>
-        // Enable_if<Matrix_impl::Requesting_element<Args...>(), T &>
-        // operator()(Args... args)
-        // {
-
-        // }
-
-        // todo: const accessors, const Args...
-
-        // Arithmetics
+        // Arithmeticstemplate <typename F>
     };
 
     /**
@@ -459,7 +486,7 @@ namespace utils
     private:
         T *ptr; // The pointer to original elements
     public:
-        // default constructors
+        // default constructors and assignment operators
         Matrix_ref() = default;
         Matrix_ref(Matrix_ref &&) = default;
         Matrix_ref &operator=(Matrix_ref &&) = default;
@@ -474,7 +501,10 @@ namespace utils
 
         // properties
 
-        virtual T *data() { return ptr; };
+        virtual T *data()
+        {
+            return ptr;
+        };
         virtual const T *data() const { return ptr; };
 
         // todo: subcripting access
@@ -498,6 +528,242 @@ namespace utils
         }
 
         // todo: implement iterators
+        // iterator
+        /**
+         * @brief Matrix_ref_iterator that provide access to member elements that can be read/written.
+         * @note The end of this iterator is determined by its degree, with the cursor at the end having its maximum degree exceeded one more.
+         *
+         */
+        class Matrix_ref_iterator
+        {
+        public:
+            using iterator_category = std::forward_iterator_tag; // Tag can impact the performance when used with STL algorithms
+            using difference_type = std::ptrdiff_t;
+            using value_type = T;
+            using pointer = T *;
+            using reference = T &;
+
+            Matrix_ref_iterator() = default;
+            Matrix_ref_iterator(Matrix_ref_iterator &&) = default;
+            Matrix_ref_iterator &operator=(Matrix_ref_iterator &&) = default;
+            Matrix_ref_iterator(Matrix_ref_iterator const &) = default;
+            Matrix_ref_iterator &operator=(Matrix_ref_iterator const &) = default;
+            ~Matrix_ref_iterator() = default;
+
+            // Initialize
+            Matrix_ref_iterator(const Matrix_slice<N> &slice, pointer start, std::array<size_t, N> cursor = {})
+                : slice(slice), start(start + slice.start), ptr(start + slice.start), cursor(cursor) {} // Initialize with steps
+
+            virtual reference operator*() const { return *ptr; }
+            virtual pointer operator->() { return ptr; }
+
+            // Prefix increment
+            virtual Matrix_ref_iterator &operator++()
+            {
+                // adjusting cursor
+                size_t step = N - 1;
+                bool overflow = false;
+                while (step >= 0)
+                {
+                    if (++cursor[step] >= slice.extents[step])
+                    {
+                        if (step == 0)
+                        {
+                            overflow = true;
+                            break;
+                        }
+                        else
+                        {
+                            cursor[step] = 0;
+                            --step;
+                        }
+                    }
+                    else
+                        break;
+                }
+
+                // calculate offset
+                size_t offset = std::inner_product(slice.strides.begin(), slice.strides.end(), cursor.begin(), 0);
+                ptr = start + offset;
+                return *this;
+            }
+
+            // Postfix increment
+            virtual Matrix_ref_iterator operator++(int)
+            {
+                Matrix_ref_iterator tmp = *this;
+                ++(*this);
+                return tmp;
+            }
+
+            friend bool operator==(const Matrix_ref_iterator &a, const Matrix_ref_iterator &b) { return a.cursor == b.cursor; }
+            friend bool operator!=(const Matrix_ref_iterator &a, const Matrix_ref_iterator &b) { return a.cursor != b.cursor; }
+
+        private:
+            const Matrix_slice<N> &slice;
+            std::array<size_t, N> cursor; // store the current position in this Matrix, 0 initialized.
+            pointer start = nullptr;
+            pointer ptr = nullptr;
+        };
+
+        virtual Matrix_ref_iterator begin() { return Matrix_ref_iterator(Matrix_base<T, N>::desc, data()); }
+        virtual Matrix_ref_iterator end()
+        {
+            std::array<size_t, N> m_end{};
+            m_end[0] = Matrix_base<T, N>::desc.extents[0];
+            return Matrix_ref_iterator(Matrix_base<T, N>::desc, data(), std::move(m_end));
+        }
+
+        // const iterator
+        /**
+         * @brief Matrix_ref_const_iterator that provide access to member elements that can be read/written.
+         * @note The end of this iterator is determined by its degree, with the cursor at the end having its maximum degree exceeded one more.
+         *
+         */
+        class Matrix_ref_const_iterator
+        {
+        public:
+            using iterator_category = std::forward_iterator_tag; // Tag can impact the performance when used with STL algorithms
+            using difference_type = std::ptrdiff_t;
+            using value_type = const T;
+            using pointer = const T *;
+            using reference = const T &;
+
+            Matrix_ref_const_iterator() = default;
+            Matrix_ref_const_iterator(Matrix_ref_const_iterator &&) = default;
+            Matrix_ref_const_iterator &operator=(Matrix_ref_const_iterator &&) = default;
+            Matrix_ref_const_iterator(Matrix_ref_const_iterator const &) = default;
+            Matrix_ref_const_iterator &operator=(Matrix_ref_const_iterator const &) = default;
+            ~Matrix_ref_const_iterator() = default;
+
+            // Initialize
+            Matrix_ref_const_iterator(const Matrix_slice<N> &slice, pointer start, std::array<size_t, N> cursor = {})
+                : slice(slice), start(start + slice.start), ptr(start + slice.start), cursor(cursor) {} // Initialize with steps
+
+            virtual const reference operator*() const { return *ptr; }
+            virtual pointer operator->() { return ptr; }
+
+            // Prefix increment
+            virtual Matrix_ref_const_iterator &operator++()
+            {
+                // adjusting cursor
+                size_t step = N - 1;
+                bool overflow = false;
+                while (step >= 0)
+                {
+                    if (++cursor[step] >= slice.extents[step])
+                    {
+                        if (step == 0)
+                        {
+                            overflow = true;
+                            break;
+                        }
+                        else
+                        {
+                            cursor[step] = 0;
+                            --step;
+                        }
+                    }
+                    else
+                        break;
+                }
+
+                // calculate offset
+                size_t offset = std::inner_product(slice.strides.begin(), slice.strides.end(), cursor.begin(), 0);
+                ptr = start + offset;
+                return *this;
+            }
+
+            // Postfix increment
+            virtual Matrix_ref_const_iterator operator++(int)
+            {
+                Matrix_ref_const_iterator tmp = *this;
+                ++(*this);
+                return tmp;
+            }
+
+            friend bool operator==(const Matrix_ref_const_iterator &a, const Matrix_ref_const_iterator &b) { return a.cursor == b.cursor; }
+            friend bool operator!=(const Matrix_ref_const_iterator &a, const Matrix_ref_const_iterator &b) { return a.cursor != b.cursor; }
+
+        private:
+            const Matrix_slice<N> &slice;
+            std::array<size_t, N> cursor; // store the current position in this Matrix, 0 initialized.
+            pointer start = nullptr;
+            pointer ptr = nullptr;
+        };
+
+        virtual Matrix_ref_const_iterator cbegin() const { return Matrix_ref_const_iterator(Matrix_base<T, N>::desc, data()); }
+        virtual Matrix_ref_const_iterator cend() const
+        {
+            std::array<size_t, N> m_end{};
+            m_end[0] = Matrix_base<T, N>::desc.extents[0];
+            return Matrix_ref_const_iterator(Matrix_base<T, N>::desc, data(), std::move(m_end));
+        }
+
+        // Arithmetics
+        template <typename F>
+        auto &apply(F f)
+        {
+            for (auto &x : (*this))
+                f(x);
+            return *this;
+        }
+
+        auto &operator+=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a += val; });
+        }
+        auto &operator-=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a -= val; });
+        }
+        auto &operator*=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a *= val; });
+        }
+        auto &operator/=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a /= val; });
+        }
+        auto &operator%=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a %= val; });
+        }
+        friend auto &operator+(const Matrix_ref<T, N> &m, const T &val)
+        {
+            Matrix<T, N> res = m;
+            res += val;
+            return res;
+        }
+        friend auto &operator-(const Matrix_ref<T, N> &m, const T &val)
+        {
+            Matrix<T, N> res = m;
+            res += val;
+            return res;
+        }
+        friend auto &operator*(const Matrix_ref<T, N> &m, const T &val)
+        {
+            Matrix<T, N> res = m;
+            res += val;
+            return res;
+        }
+        friend auto &operator/(const Matrix_ref<T, N> &m, const T &val)
+        {
+            Matrix<T, N> res = m;
+            res += val;
+            return res;
+        }
+        friend auto &operator%(const Matrix_ref<T, N> &m, const T &val)
+        {
+            Matrix<T, N> res = m;
+            res += val;
+            return res;
+        }
     };
 
     template <typename T>
@@ -542,6 +808,259 @@ namespace utils
             return *(data() + Matrix_base<T, 1>::desc(dims...));
         }
         // todo: implement iterators
+        /**
+         * @brief Matrix_ref_iterator that provide access to member elements that can be read/written.
+         * @note The end of this iterator is determined by its degree, with the cursor at the end having its maximum degree exceeded one more.
+         *
+         */
+        class Matrix_ref_iterator
+        {
+        public:
+            using iterator_category = std::forward_iterator_tag; // Tag can impact the performance when used with STL algorithms
+            using difference_type = std::ptrdiff_t;
+            using value_type = T;
+            using pointer = T *;
+            using reference = T &;
+
+            Matrix_ref_iterator() = default;
+            Matrix_ref_iterator(Matrix_ref_iterator &&) = default;
+            Matrix_ref_iterator &operator=(Matrix_ref_iterator &&) = default;
+            Matrix_ref_iterator(Matrix_ref_iterator const &) = default;
+            Matrix_ref_iterator &operator=(Matrix_ref_iterator const &) = default;
+            ~Matrix_ref_iterator() = default;
+
+            // Initialize
+            Matrix_ref_iterator(const Matrix_slice<1> &slice, pointer start, std::array<size_t, 1> cursor = {})
+                : slice(slice), start(start), ptr(start), cursor(cursor) {} // Initialize with steps
+
+            virtual reference operator*() const { return *ptr; }
+            virtual pointer operator->() { return ptr; }
+
+            // Prefix increment
+            virtual Matrix_ref_iterator &operator++()
+            {
+                // adjusting cursor
+                size_t step = 0;
+                bool overflow = false;
+                while (step >= 0)
+                {
+                    if (++cursor[step] >= slice.extents[step])
+                    {
+                        if (step == 0)
+                        {
+                            overflow = true;
+                            break;
+                        }
+                        else
+                        {
+                            cursor[step] = 0;
+                            --step;
+                        }
+                    }
+                    else
+                        break;
+                }
+
+                // calculate offset
+                size_t offset = std::inner_product(slice.strides.begin(), slice.strides.end(), cursor.begin(), 0);
+                ptr = start + offset;
+                return *this;
+            }
+
+            // Postfix increment
+            virtual Matrix_ref_iterator operator++(int)
+            {
+                Matrix_ref_iterator tmp = *this;
+                ++(*this);
+                return tmp;
+            }
+
+            friend bool operator==(const Matrix_ref_iterator &a, const Matrix_ref_iterator &b) { return a.cursor == b.cursor; }
+            friend bool operator!=(const Matrix_ref_iterator &a, const Matrix_ref_iterator &b) { return a.cursor != b.cursor; }
+
+        private:
+            const Matrix_slice<1> &slice;
+            std::array<size_t, 1> cursor; // store the current position in this Matrix, 0 initialized.
+            pointer start = nullptr;
+            pointer ptr = nullptr;
+        };
+
+        virtual Matrix_ref_iterator begin() { return Matrix_ref_iterator(Matrix_base<T, 1>::desc, data()); }
+        virtual Matrix_ref_iterator end()
+        {
+            std::array<size_t, 1> m_end{};
+            m_end[0] = Matrix_base<T, 1>::desc.extents[0];
+            return Matrix_ref_iterator(Matrix_base<T, 1>::desc, data(), std::move(m_end));
+        }
+
+        // const iterator
+        /**
+         * @brief Matrix_ref_const_iterator that provide access to member elements that can be read/written.
+         * @note The end of this iterator is determined by its degree, with the cursor at the end having its maximum degree exceeded one more.
+         *
+         */
+        class Matrix_ref_const_iterator
+        {
+        public:
+            using iterator_category = std::forward_iterator_tag; // Tag can impact the performance when used with STL algorithms
+            using difference_type = std::ptrdiff_t;
+            using value_type = const T;
+            using pointer = const T *;
+            using reference = const T &;
+
+            Matrix_ref_const_iterator() = default;
+            Matrix_ref_const_iterator(Matrix_ref_const_iterator &&) = default;
+            Matrix_ref_const_iterator &operator=(Matrix_ref_const_iterator &&) = default;
+            Matrix_ref_const_iterator(Matrix_ref_const_iterator const &) = default;
+            Matrix_ref_const_iterator &operator=(Matrix_ref_const_iterator const &) = default;
+            ~Matrix_ref_const_iterator() = default;
+
+            // Initialize
+            Matrix_ref_const_iterator(const Matrix_slice<1> &slice, pointer start, std::array<size_t, 1> cursor = {})
+                : slice(slice), start(start + slice.start), ptr(start + slice.start), cursor(cursor) {} // Initialize with steps
+
+            virtual const reference operator*() const { return *ptr; }
+            virtual pointer operator->() { return ptr; }
+
+            // Prefix increment
+            virtual Matrix_ref_const_iterator &operator++()
+            {
+                // adjusting cursor
+                size_t step = 0;
+                bool overflow = false;
+                while (step >= 0)
+                {
+                    if (++cursor[step] >= slice.extents[step])
+                    {
+                        if (step == 0)
+                        {
+                            overflow = true;
+                            break;
+                        }
+                        else
+                        {
+                            cursor[step] = 0;
+                            --step;
+                        }
+                    }
+                    else
+                        break;
+                }
+
+                // calculate offset
+                size_t offset = std::inner_product(slice.strides.begin(), slice.strides.end(), cursor.begin(), 0);
+                ptr = start + offset;
+                return *this;
+            }
+
+            // Postfix increment
+            virtual Matrix_ref_const_iterator operator++(int)
+            {
+                Matrix_ref_const_iterator tmp = *this;
+                ++(*this);
+                return tmp;
+            }
+
+            friend bool operator==(const Matrix_ref_const_iterator &a, const Matrix_ref_const_iterator &b) { return a.cursor == b.cursor; }
+            friend bool operator!=(const Matrix_ref_const_iterator &a, const Matrix_ref_const_iterator &b) { return a.cursor != b.cursor; }
+
+        private:
+            const Matrix_slice<1> &slice;
+            std::array<size_t, 1> cursor; // store the current position in this Matrix, 0 initialized.
+            pointer start = nullptr;
+            pointer ptr = nullptr;
+        };
+
+        virtual Matrix_ref_const_iterator cbegin() const { return Matrix_ref_const_iterator(Matrix_base<T, 1>::desc, data()); }
+        virtual Matrix_ref_const_iterator cend() const
+        {
+            std::array<size_t, 1> m_end{};
+            m_end[0] = Matrix_base<T, 1>::desc.extents[0];
+            return Matrix_ref_const_iterator(Matrix_base<T, 1>::desc, data(), std::move(m_end));
+        }
+
+        // Arithmetics
+        template <typename F>
+        auto &apply(F f)
+        {
+            for (auto &x : (*this))
+                f(x);
+            return *this;
+        }
+
+        auto &operator+=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a += val; });
+        }
+        auto &operator-=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a -= val; });
+        }
+        auto &operator*=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a *= val; });
+        }
+        auto &operator/=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a /= val; });
+        }
+        auto &operator%=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a %= val; });
+        }
+        friend auto &operator+(const Matrix_ref<T, 1> &m, const T &val)
+        {
+            Matrix_ref<T, 1> res = m;
+            res += val;
+            return res;
+        }
+        friend auto &operator-(const Matrix_ref<T, 1> &m, const T &val)
+        {
+            Matrix_ref<T, 1> res = m;
+            res += val;
+            return res;
+        }
+        friend auto &operator*(const Matrix_ref<T, 1> &m, const T &val)
+        {
+            Matrix_ref<T, 1> res = m;
+            res += val;
+            return res;
+        }
+        friend auto &operator/(const Matrix_ref<T, 1> &m, const T &val)
+        {
+            Matrix_ref<T, 1> res = m;
+            res += val;
+            return res;
+        }
+        friend auto &operator%(const Matrix_ref<T, 1> &m, const T &val)
+        {
+            Matrix_ref<T, 1> res = m;
+            res += val;
+            return res;
+        }
+
+        template <typename F>
+        auto &apply(Matrix_ref<T, 1> &m, F f)
+        {
+            assert(Matrix_impl::same_extents(m.descriptor(), this->descriptor()));
+            for (auto i = begin(), j = m.begin(); i != end(); ++i, ++j)
+                f(*i, *j);
+            return *this;
+        }
+
+        template <typename F>
+        auto &apply(Matrix<T, 1> &m, F f)
+        {
+            assert(Matrix_impl::same_extents(m.descriptor(), this->descriptor()));
+            for (auto i = begin(), j = m.begin(); i != end(); ++i, ++j)
+                f(*i, *j);
+            return *this;
+        }
     };
 
     template <typename T>
@@ -587,6 +1106,71 @@ namespace utils
 
         operator T &() { return *(data() + Matrix_base<T, 0>::desc.start); }
         operator const T &() { return *(data() + Matrix_base<T, 0>::desc.start); }
+
+        // Arithmetics
+
+        template <typename F>
+        auto &apply(F f)
+        {
+            f(*(data() + Matrix_base<T, 0>::desc.start));
+            return *this;
+        }
+
+        auto &operator+=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a += val; });
+        }
+        auto &operator-=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a -= val; });
+        }
+        auto &operator*=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a *= val; });
+        }
+        auto &operator/=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a /= val; });
+        }
+        auto &operator%=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a %= val; });
+        }
+        friend auto &operator+(const Matrix_ref<T, 0> &m, const T &val)
+        {
+            Matrix_ref<T, 0> res = m;
+            res += val;
+            return res;
+        }
+        friend auto &operator-(const Matrix_ref<T, 0> &m, const T &val)
+        {
+            Matrix_ref<T, 0> res = m;
+            res += val;
+            return res;
+        }
+        friend auto &operator*(const Matrix_ref<T, 0> &m, const T &val)
+        {
+            Matrix_ref<T, 0> res = m;
+            res += val;
+            return res;
+        }
+        friend auto &operator/(const Matrix_ref<T, 0> &m, const T &val)
+        {
+            Matrix_ref<T, 0> res = m;
+            res += val;
+            return res;
+        }
+        friend auto &operator%(const Matrix_ref<T, 0> &m, const T &val)
+        {
+            Matrix_ref<T, 0> res = m;
+            res += val;
+            return res;
+        }
     };
 
     template <typename T, size_t N>
@@ -602,12 +1186,43 @@ namespace utils
         using const_iterator = typename std::vector<T>::const_iterator;
 
         // default constructors
+
+        /**
+         * @brief Construct a new Matrix object that matches the dimension. You cannot use this raw `Matrix`.
+         *
+         */
         Matrix() = default;
         Matrix(Matrix &&) = default; // Move constructor
         Matrix &operator=(Matrix &&) = default;
         Matrix(Matrix const &) = default;
         Matrix &operator=(Matrix const &) = default;
         ~Matrix() = default;
+
+        /**
+         * @brief Allowing assignment from other Matrices
+         *
+         */
+        template <typename U>
+        Matrix(Matrix_ref<U, N> const &x)
+        {
+            assert((Convertible<T, U>()));
+            assert(Matrix_impl::same_extents(x.descriptor(), this->descriptor()));
+            elems.reserve(x.size());
+            elems.insert(elems.begin(), x.cbegin(), x.cend());
+        }
+
+        /**
+         * @brief
+         *
+         */
+        template <typename U>
+        Matrix(Matrix<U, N> const &x)
+        {
+            assert((Convertible<T, U>()));
+            assert(Matrix_impl::same_extents(x.descriptor(), this->descriptor()));
+            elems.reserve(x.size());
+            elems.insert(elems.begin(), x.cbegin(), x.cend());
+        }
 
         /**
          * @brief Construct a new Matrix object by specifying the extents.
@@ -677,15 +1292,78 @@ namespace utils
             return *(data() + Matrix_base<T, N>::desc(dims...));
         }
 
-        // todo: Do specialization when N == 1
-        // todo: copy implementation to Matrix_ref class
+        // iterator
+        iterator begin() { return elems.begin(); }
+        iterator end() { return elems.end(); }
 
-        // todo: arithemtic operations
-        // template <typename F>
-        // Matrix<T, N> apply(F f)
-        // {
-        //     for ()
-        // }
+        iterator cbegin() const { return elems.cbegin(); }
+        iterator cend() const { return elems.cend(); }
+
+        // Arithmetics
+        template <typename F>
+        auto &apply(F f)
+        {
+            for (auto &x : (*this))
+                f(x);
+            return *this;
+        }
+
+        auto &operator+=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a += val; });
+        }
+        auto &operator-=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a -= val; });
+        }
+        auto &operator*=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a *= val; });
+        }
+        auto &operator/=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a /= val; });
+        }
+        auto &operator%=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a %= val; });
+        }
+        friend auto &operator+(const Matrix<T, N> &m, const T &val)
+        {
+            Matrix<T, N> res = m;
+            res += val;
+            return res;
+        }
+        friend auto &operator-(const Matrix<T, N> &m, const T &val)
+        {
+            Matrix<T, N> res = m;
+            res += val;
+            return res;
+        }
+        friend auto &operator*(const Matrix<T, N> &m, const T &val)
+        {
+            Matrix<T, N> res = m;
+            res += val;
+            return res;
+        }
+        friend auto &operator/(const Matrix<T, N> &m, const T &val)
+        {
+            Matrix<T, N> res = m;
+            res += val;
+            return res;
+        }
+        friend auto &operator%(const Matrix<T, N> &m, const T &val)
+        {
+            Matrix<T, N> res = m;
+            res += val;
+            return res;
+        }
+
     };
 
     template <typename T>
@@ -707,6 +1385,32 @@ namespace utils
         Matrix(Matrix const &) = default;
         Matrix &operator=(Matrix const &) = default;
         ~Matrix() = default;
+
+        /**
+         * @brief Allowing assignment from other Matrices
+         *
+         */
+        template <typename U>
+        Matrix(Matrix_ref<U, 1> const &x)
+        {
+            assert((Convertible<T, U>()));
+            assert(Matrix_impl::same_extents(Matrix_base<T, 1>::desc, x.descriptor()));
+            elems.reserve(x.size());
+            elems.insert(elems.begin(), x.cbegin(), x.cend());
+        }
+
+        /**
+         * @brief
+         *
+         */
+        template <typename U>
+        Matrix(Matrix<U, 1> const &x)
+        {
+            assert((Convertible<T, U>()));
+            assert(Matrix_impl::same_extents(Matrix_base<T, 1>::desc, x.descriptor()));
+            elems.reserve(x.size());
+            elems.insert(elems.begin(), x.cbegin(), x.cend());
+        }
 
         /**
          * @brief Construct a new Matrix object by specifying the extents.
@@ -774,6 +1478,13 @@ namespace utils
             return *(data() + Matrix_base<T, 1>::desc(dims...));
         }
 
+        // iterators
+        iterator begin() { return elems.begin(); }
+        iterator end() { return elems.end(); }
+
+        iterator cbegin() const { return elems.cbegin(); }
+        iterator cend() const { return elems.cend(); }
+
         // todo: Do specializations when N == 1
         // todo: copy implementation to Matrix_ref class
 
@@ -783,6 +1494,69 @@ namespace utils
         // {
         //     for ()
         // }
+        template <typename F>
+        auto &apply(F f)
+        {
+            for (auto &x : (*this))
+                f(x);
+            return *this;
+        }
+
+        auto &operator+=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a += val; });
+        }
+        auto &operator-=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a -= val; });
+        }
+        auto &operator*=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a *= val; });
+        }
+        auto &operator/=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a /= val; });
+        }
+        auto &operator%=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a %= val; });
+        }
+        friend auto &operator+(const Matrix<T, 1> &m, const T &val)
+        {
+            Matrix<T, 1> res = m;
+            res += val;
+            return res;
+        }
+        friend auto &operator-(const Matrix<T, 1> &m, const T &val)
+        {
+            Matrix<T, 1> res = m;
+            res += val;
+            return res;
+        }
+        friend auto &operator*(const Matrix<T, 1> &m, const T &val)
+        {
+            Matrix<T, 1> res = m;
+            res += val;
+            return res;
+        }
+        friend auto &operator/(const Matrix<T, 1> &m, const T &val)
+        {
+            Matrix<T, 1> res = m;
+            res += val;
+            return res;
+        }
+        friend auto &operator%(const Matrix<T, 1> &m, const T &val)
+        {
+            Matrix<T, 1> res = m;
+            res += val;
+            return res;
+        }
     };
 
     template <typename T>
@@ -801,6 +1575,11 @@ namespace utils
         Matrix(Matrix const &) = default;
         Matrix &operator=(Matrix const &) = default;
         ~Matrix() = default;
+
+        /**
+         * @brief Allowing assignment from other Matrices
+         *
+         */
 
         Matrix(const T &x) : elem(x) {}
         Matrix &operator=(const T &value)
@@ -825,7 +1604,71 @@ namespace utils
 
         operator T &() { return elem; }
         operator const T &() { return elem; }
+
+        template <typename F>
+        auto &apply(F f)
+        {
+            f(elem);
+            return *this;
+        }
+
+        auto &operator+=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a += val; });
+        }
+        auto &operator-=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a -= val; });
+        }
+        auto &operator*=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a *= val; });
+        }
+        auto &operator/=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a /= val; });
+        }
+        auto &operator%=(const T &val)
+        {
+            return apply([&](T &a)
+                         { a %= val; });
+        }
+        friend auto &operator+(const Matrix<T, 0> &m, const T &val)
+        {
+            Matrix<T, 0> res = m;
+            res += val;
+            return res;
+        }
+        friend auto &operator-(const Matrix<T, 0> &m, const T &val)
+        {
+            Matrix<T, 0> res = m;
+            res += val;
+            return res;
+        }
+        friend auto &operator*(const Matrix<T, 0> &m, const T &val)
+        {
+            Matrix<T, 0> res = m;
+            res += val;
+            return res;
+        }
+        friend auto &operator/(const Matrix<T, 0> &m, const T &val)
+        {
+            Matrix<T, 0> res = m;
+            res += val;
+            return res;
+        }
+        friend auto &operator%(const Matrix<T, 0> &m, const T &val)
+        {
+            Matrix<T, 0> res = m;
+            res += val;
+            return res;
+        }
     };
 
 };
+
 #endif

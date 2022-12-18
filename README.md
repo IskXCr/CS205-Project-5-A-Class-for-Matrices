@@ -245,14 +245,34 @@ namespace Matrix_impl
 
 // In Matrix<T, N> ... 
 // Matrix<T, 0> is specialized, and thus the corresponding initializer is different.
-Matrix(Matrix_initializer<T, N> init)
+
+/**
+ * @brief Construct a new Matrix object using list-initialized constructor.
+ *
+ * @param init
+ * @note
+ * Rules:
+ * If either a default constructor or an initializer-list constructor could be invoked, prefer the default constructor.
+ * If both an initializer-list constructor and an "ordinary constructor" could be invoked, prefer the initializer-list constructor.
+*/
+template <typename T, size_t N>
+class Matrix : public Matrix_base<T, N>
 {
-    Matrix_base<T, N>::desc.extents = Matrix_impl::derive_extents<N>(init);
-    Matrix_base<T, N>::desc.recalc_size();
-    Matrix_base<T, N>::desc.init_full_dim();
-    elems.reserve(Matrix_base<T, N>::desc.size);
-    Matrix_impl::insert_flat(init, elems);
-    assert((elems.size() == Matrix_base<T, N>::desc.size));
+protected:
+    std::vector<T> elems; // storing the elements of the matrix
+
+public:
+    // ...
+    Matrix(Matrix_initializer<T, N> init)
+    {
+        Matrix_base<T, N>::desc.extents = Matrix_impl::derive_extents<N>(init);
+        Matrix_base<T, N>::desc.recalc_size();
+        Matrix_base<T, N>::desc.init_full_dim();
+        elems.reserve(Matrix_base<T, N>::desc.size);
+        Matrix_impl::insert_flat(init, elems);
+        assert((elems.size() == Matrix_base<T, N>::desc.size));
+    }
+    // ...
 }
 ```
 
@@ -403,28 +423,225 @@ T& utils::Matrix_ref<T, N>::operator()(Dims ...) [with Dims = {int, int}; T = do
 
 
 
-#### Element-by-element application
-
-
-
-
-
 #### Region of Interest
 
-We implement the **Region of Interest** function through `Matrix_slice` and `Matrix_ref`. To implement ROI, we must first define the iterator, so that iterating through the contained elements with enhanced for is possible. It is also very convenient to use such iterator to construct a new `Matrix` based on existing `Mat` object, regardless of whether it is a reference to a submatrix or it owns its `Matrix`.
+We implement the **Region of Interest** function through `Matrix_slice` and `Matrix_ref`. 
+
+To implement ROI, we must first define an ***iterator*** (which is very important!), so that iterating through the contained elements with enhanced for is possible. It is also very convenient to use such iterator to construct a new `Matrix` based on an existing `Mat` object, regardless of whether it owns its elements (so that it has the right to destruct them and rearrange them).
+
+Once a `Mat` object is created, the user has no way to redefine its dimension, nor to change its `extents`. In this way, modifying a `Matrix` object would not cause the defect of `Matrix_ref`s which attach to it.
+
+We first give the implementation of the iterator of a `Mat` object, based on `Matrix_slice`.
 
 ```C++
+/**
+ * @brief Matrix_ref_iterator that provide access to member elements that can be read/written.
+ * @note The end of this iterator is determined by its degree, with the cursor at the end having its maximum degree exceeded one more.
+ *
+ */
+class Matrix_ref_iterator
+{
+    public:
+    using iterator_category = std::forward_iterator_tag; // Tag can impact the performance when used with STL algorithms
+    using difference_type = std::ptrdiff_t;
+    using value_type = T;
+    using pointer = T *;
+    using reference = T &;
+
+    Matrix_ref_iterator() = default;
+    Matrix_ref_iterator(Matrix_ref_iterator &&) = default;
+    Matrix_ref_iterator &operator=(Matrix_ref_iterator &&) = default;
+    Matrix_ref_iterator(Matrix_ref_iterator const &) = default;
+    Matrix_ref_iterator &operator=(Matrix_ref_iterator const &) = default;
+    ~Matrix_ref_iterator() = default;
+
+    // Initialize
+    Matrix_ref_iterator(Matrix_slice<N> &slice, T *start, std::array<size_t, N> cursor = {})
+        : slice(slice), start(start), ptr(start), cursor(cursor) {} // Initialize with steps
+
+    virtual reference operator*() const { return *ptr; }
+    virtual pointer operator->() { return ptr; }
+
+    // Prefix increment
+    virtual Matrix_ref_iterator &operator++()
+    {
+        // adjusting cursor
+        size_t step = N - 1;
+        bool overflow = false;
+        while (step >= 0)
+        {
+            if (++cursor[step] >= slice.extents[step])
+            {
+                if (step == 0)
+                {
+                    overflow = true;
+                    break;
+                }
+                else
+                {
+                    cursor[step] = 0;
+                    --step;
+                }
+            }
+            else
+                break;
+        }
+
+        // calculate offset
+        size_t offset = std::inner_product(slice.strides.begin(), slice.strides.end(), cursor.begin(), 0);
+        ptr = start + offset;
+        return *this;
+    }
+
+    // Postfix increment
+    virtual Matrix_ref_iterator operator++(int)
+    {
+        Matrix_ref_iterator tmp = *this;
+        ++(*this);
+        return tmp;
+    }
+
+    friend bool operator==(const Matrix_ref_iterator &a, const Matrix_ref_iterator &b) { return a.cursor == b.cursor; }
+    friend bool operator!=(const Matrix_ref_iterator &a, const Matrix_ref_iterator &b) { return a.cursor != b.cursor; }
+
+    private:
+    Matrix_slice<N> &slice;
+    std::array<size_t, N> cursor; // store the current position in this Matrix, 0 initialized.
+    pointer start = nullptr;
+    pointer ptr = nullptr;
+};
+
+virtual Matrix_ref_iterator begin() { return Matrix_ref_iterator(desc, data()); }
+virtual Matrix_ref_iterator end()
+{
+    std::array<size_t, N> m_end{};
+    m_end[0] = desc.extents[0];
+    return Matrix_ref_iterator(desc, data(), std::move(m_end));
+}
 ```
 
+* Currently, it is implemented through incrementing inner `cursor` (corresponding to its `extents`, therefore performance issue may occur.
+* There should be other faster implementations, but using `std::inner_product` is very straight forward and easy to read.
+* For plain `Matrix` object, usage of `std::vector<T>::iterator` is applied.
 
+From this implementation, the following access method can be allowed:
+
+```C++
+// iterator test
+cout << "Test normal iterator\n";
+for (auto &i : mat2)
+    cout << "Iterator test: " << i << "\n"; // Access the entire Matrix
+cout << "========>OK.\n";
+
+cout << "Test reference iterator\n";
+for (auto &i : mat2[2])
+    cout << "Iterator test: " << i << "\n"; // Access the second row
+cout << "========>OK.\n";
+```
+
+`const_iterator`s are also implemented.
+
+Through the usage of iterators, we can initialize `Matrix` and `Matrix_ref` from each other.
+
+
+
+#### Element-by-Element Operation through `apply (F f)`
+
+After having implemented the `iterator`, we can now finally turn to ELE operations.
+
+```C++
+template <typename F>
+Matrix<T, N> &apply(F f)
+{
+    for (auto &x : (*this))
+        f(x);
+    return *this; // Enables chaining
+}
+```
+
+This interface allows you to do something like
+
+```C++
+mat9.apply([&](int &a){ a += 10; });
+```
+
+to each element while also enabling other predefined per-element operations.
+
+
+
+#### Other operations
+
+All other operations (including per element arithmetic, multiplication, ) can be implemented in the same way as in `Project 3`. Matrix multiplication is only defined for 2-D `Mat`s. However through subscripting and the usage of iterators, the user can quickly implement ***tensor*** multiplication that is suitable for N-dimensional operations. For details, please see source code.
 
 ## Part 3 - Tests
 
 Tests are constructed to mainly test whether the program will compile with different template parameters. Since we have only limited time to design this project, we only test the basic functions.
 
-The test functions are built into the source file `test.cpp`.
+The test functions are built into the source file `test.cpp`, and since the list is too long, most of them is omitted.
 
 ```shell
+// ...
+Test reference iterator
+Iterator test: 19
+Iterator test: 20
+Iterator test: 21
+Iterator test: 22
+Iterator test: 23
+Iterator test: 24
+Iterator test: 25
+Iterator test: 26
+Iterator test: 27
+========>OK.
+Test construction from Matrix_ref
+Iterator test: 10
+Iterator test: 11
+Iterator test: 12
+Iterator test: 13
+Iterator test: 14
+Iterator test: 17
+Iterator test: 16
+Iterator test: 2333
+Iterator test: 18
+3, 3
+========>OK.
+Test iterator change from Matrix
+Iterator test: 11
+Iterator test: 12
+Iterator test: 13
+Iterator test: 14
+Iterator test: 15
+Iterator test: 18
+Iterator test: 17
+Iterator test: 2334
+Iterator test: 19
+3, 3
+========>OK.
+Test per element apply from Matrix
+Iterator test: 21
+Iterator test: 22
+Iterator test: 23
+Iterator test: 24
+Iterator test: 25
+Iterator test: 28
+Iterator test: 27
+Iterator test: 2344
+Iterator test: 29
+3, 3
+========>OK.
+Test 2 per element apply from Matrix
+Iterator test: 22
+Iterator test: 23
+Iterator test: 24
+Iterator test: 25
+Iterator test: 26
+Iterator test: 29
+Iterator test: 28
+Iterator test: 2345
+Iterator test: 30
+3, 3
+========>OK.
+
+// ...
 ```
 
 
