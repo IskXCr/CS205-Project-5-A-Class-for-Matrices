@@ -39,9 +39,9 @@ void test_template_constructors()
     {
         std::cout << "OK, element " << i << " is " << *(mat2.data() + i) << endl;
     }
-    assert(mat2[1][2][1] == 17);
+    assert((mat2[1][2][1] == 17));
     mat2[1][2][1] = 2333;
-    assert(mat2[1](2, 1) == 2333);
+    assert((mat2[1](2, 1) == 2333));
 
     // std::cout << "OK, element 1 is " << mat2[0] << endl;
     assert(mat2.rows() == 3);
