@@ -8,8 +8,7 @@ include_directories(./include)
 
 find_package(OpenMP REQUIRED)
 
-# add_compile_options(-O3)
-add_compile_options(-std=c++11)
+# add_compile_options(-O3 -std=c++11)
 
 # add the executable
 add_executable(test ${DIR_SRCS})

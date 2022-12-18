@@ -16,6 +16,7 @@
 #include <iostream>
 #include <type_traits> // For converting types and undefining some functions
 #include <vector>
+#include <array>
 #include <stdexcept>
 #include <memory>
 #include <numeric>
@@ -227,17 +228,55 @@ namespace utils
         //     return All((Convertible<Args, size_t>() || Same<Args, slice>())...) && Some(Same<Args, slice>()...);
         // }
 
+        /**
+         * @brief Check whether the given dims is out of bound for a descriptor of a `Mat` object.
+         *
+         * @tparam N
+         * @tparam Dims
+         * @param slice
+         * @param dims
+         * @return true
+         * @return false
+         */
+        template <size_t N, typename... Dims>
+        bool check_bounds(const Matrix_slice<N> &slice, Dims... dims)
+        {
+            size_t indexes[N]{size_t(dims)...};
+            return std::equal(indexes, indexes + N, slice.extents.begin(), std::less<size_t>());
+        }
+
+        /**
+         * @brief Extract target `Matrix` from the source `Matrix`, offset calculated.
+         *
+         * @tparam Dim if `Dim == 0`, extract a row. Else, extract a column.
+         * @tparam N
+         * @param n
+         * @param desc
+         * @param slice
+         */
         template <size_t Dim, size_t N>
         void slice_dim(size_t n, Matrix_slice<N> &desc, Matrix_slice<N - 1> &slice)
         {
-            static_assert(Dim == 1 || Dim == 0, "Wrong argument.");
+            // static_assert(Dim == 1 || Dim == 0, "slice_dim: wrong argument.");
+            // debug support
+            static_assert(Dim == 0, "slice_dim: wrong argument.");
 
             // todo: slice_dim implementation
             if (Dim == 0)
             {
+                slice.start = desc.start + n * desc.strides[0];
+                if (desc.extents.size() > 1)
+                {
+                    for (auto i = desc.extents.begin() + 1, j = slice.extents.begin(); i != desc.extents.end(); ++i, ++j)
+                        *j = *i;
+                    for (auto i = desc.strides.begin() + 1, j = slice.strides.begin(); i != desc.strides.end(); ++i, ++j)
+                        *j = *i;
+                }
+                slice.recalc_size();
             }
             else
             {
+                // todo: finish slice_col
             }
         }
 
@@ -248,60 +287,106 @@ namespace utils
 
     /**
      * @brief Class that contains critical access information for class `Matrix_ref` and `Matrix`.
-     * @note To initialize `desc` of a matrix, you must first call `Matrix_impl::derive_extents`, then call
-     *       `Matrix_slice::norm_by_extents, or directly call the constructor.
+     * @note To initialize `desc` of a `Mat` object, you must first call `Matrix_impl::derive_extents`, then call
+     *       `Matrix_slice::norm_by_extents, or directly call the constructor. If the target is a new `Matrix` that
+     *       owns the elements, you must call `init_full_dim`.
      */
     template <size_t N>
     struct Matrix_slice
     {
-        size_t size = 0;
-        size_t start = 0;
-        std::array<size_t, N> extents;
-        std::array<size_t, N> strides;
+        size_t size = 0;               // number of elements in this `Matrix_slice`
+        size_t start = 0;              // start offset
+        std::array<size_t, N> extents; // #element on each dimension
+        std::array<size_t, N> strides; // offset for each dimension (when dimension + 1, offset...)
 
         // Constructors
 
         Matrix_slice() = default;
+        Matrix_slice(Matrix_slice &&x)
+        {
+            size = x.size;
+            start = x.start;
+            extents = std::move(x.extents);
+            x.extents = {};
+            strides = std::move(x.strides);
+            x.strides = {};
+            recalc_size();
+        };
+        Matrix_slice &operator=(Matrix_slice &&x)
+        {
+            size = x.size;
+            start = x.start;
+            extents = std::move(x.extents);
+            x.extents = {};
+            strides = std::move(x.strides);
+            x.strides = {};
+            recalc_size();
+            return *this;
+        };
+        Matrix_slice(Matrix_slice const &x) : size(x.size), start(x.start), extents(x.extents), strides(x.strides)
+        {
+            recalc_size();
+        }
+        Matrix_slice &operator=(Matrix_slice const &x)
+        {
+            size = x.size;
+            start = x.start;
+            extents = x.extents;
+            strides = x.strides;
+            recalc_size();
+            return *this;
+        };
+        ~Matrix_slice() = default;
 
         template <typename... Exts>
-        Matrix_slice(Exts... exts) : extents{exts...}
+        Matrix_slice(Exts... exts)
         {
-            norm_by_extents();
+            static_assert(Matrix_impl::Requesting_element<Exts...>(), "Matrix_slice: invalid dimension argument.");
+            extents = {size_t(exts)...};
+            recalc_size();
         }
 
-        void norm_by_extents()
+        template <typename... Exts>
+        Matrix_slice &operator=(Exts... exts)
         {
-            size = (extents.size() > 0) ? 1 : 0;
-
-#pragma omp parallel for
-            for (auto &i : extents)
-                size *= i;
+            return *this = Matrix_slice(exts...);
         }
-    };
 
-    // todo: finish template specialization
-    template <>
-    struct Matrix_slice<1>
-    {
-        size_t size = 0;
-        size_t start = 0;
-        std::array<size_t, 1> extents;
-        std::array<size_t, 1> strides;
-
-        // Constructors
-
-        Matrix_slice() = default;
-
-        void norm_by_extents()
+        /**
+         * @brief Initialize all strides of a newly created `Matrix`.
+         *
+         */
+        void init_full_dim()
         {
-            size = (extents.size() > 0) ? 1 : 0;
+            size_t offset = (extents.size() > 0) ? 1 : 0;
 
-#pragma omp parallel for
+            for (auto i = extents.rbegin(), j = strides.rbegin(); i != extents.rend(); i++, j++)
+                *j = offset, offset *= *i;
+        }
+
+        void recalc_size()
+        {
+            size = 1;
             for (auto &i : extents)
                 size *= i;
         }
 
-        size_t operator()(size_t i) const { return i; }
+        /**
+         * @brief Return the offset required to access the underlying data.
+         *
+         * @tparam Dims
+         * @param dims
+         * @return size_t
+         */
+        template <typename... Dims>
+        size_t operator()(Dims... dims) const
+        {
+            static_assert(sizeof...(Dims) == N, "Matrix_slice: unmatched subscripting dimension.");
+
+            size_t args[N]{size_t(dims)...}; // copy arguments into an array
+
+            return start + std::inner_product(args, args + N, strides.begin(), size_t(0));
+        }
     };
 
     /**
@@ -312,9 +397,20 @@ namespace utils
     class Matrix_base
     {
     protected:
-        Matrix_slice<N> desc; // the dimension of matrix
+        Matrix_slice<N> desc; // the descriptor of this matrix
 
     public:
+        // constructors
+        Matrix_base() = default;
+        Matrix_base(Matrix_base &&) = default; // Move constructor
+        Matrix_base &operator=(Matrix_base &&) = default;
+        Matrix_base(Matrix_base const &) = default;
+        Matrix_base &operator=(Matrix_base const &) = default;
+        ~Matrix_base() = default;
+
+        // for convenience
+        // Matrix_base
+
         // properties
 
         // "flat" element access
@@ -326,13 +422,15 @@ namespace utils
         size_t rows() const { return desc.extents[0]; }
         size_t columns() const
         {
-            if (order() == 1)
-                return 1;
+            if (order() <= 1)
+                return order();
             else
                 return desc.extents[1];
         }
         size_t size() const { return desc.size; }
         Matrix_slice<N> descriptor() { return desc; }
+
+        // iterator
 
         // accessors
 
@@ -349,7 +447,7 @@ namespace utils
     };
 
     /**
-     * @brief
+     * @brief A reference to Matrix, possibly pointing to a submatrix.
      *
      * @tparam T
      * @tparam N
@@ -360,7 +458,6 @@ namespace utils
     {
     private:
         T *ptr; // The pointer to original elements
-
     public:
         // default constructors
         Matrix_ref() = default;
@@ -370,7 +467,10 @@ namespace utils
         Matrix_ref &operator=(Matrix_ref const &) = default;
         ~Matrix_ref() = default;
 
-        Matrix_ref(const Matrix_slice<N> &s, T *p) : Matrix_base<T, N>::desc{s}, ptr{p} {}
+        Matrix_ref(const Matrix_slice<N> &s, T *p) : ptr{p}
+        {
+            Matrix_base<T, N>::desc = s;
+        }
 
         // properties
 
@@ -378,19 +478,218 @@ namespace utils
         virtual const T *data() const { return ptr; };
 
         // todo: subcripting access
+
         Matrix_ref<T, N - 1> row(size_t n)
         {
             assert(n < (Matrix_base<T, N>::rows()));
             Matrix_slice<N - 1> row;
             Matrix_impl::slice_dim<0>(n, Matrix_base<T, N>::desc, row);
-            return Matrix_ref(row, data());
+            // std::cerr << "(Matrix ref row: " << Matrix_base<T, N>::desc.start << ")";
+            return Matrix_ref<T, N - 1>(row, data());
+        }
+
+        Matrix_ref<T, N - 1> operator[](size_t n) { return row(n); }
+
+        template <typename... Dims>
+        Enable_if<Matrix_impl::Requesting_element<Dims...>(), T &> operator()(Dims... dims)
+        {
+            assert(Matrix_impl::check_bounds(Matrix_base<T, N>::desc, dims...));
+            return *(data() + Matrix_base<T, N>::desc(dims...));
         }
 
         // todo: implement iterators
     };
 
+    template <typename T>
+    class Matrix_ref<T, 1> : public Matrix_base<T, 1>
+    {
+    private:
+        T *ptr; // The pointer to original elements
+    public:
+        // default constructors
+        Matrix_ref() = default;
+        Matrix_ref(Matrix_ref &&) = default;
+        Matrix_ref &operator=(Matrix_ref &&) = default;
+        Matrix_ref(Matrix_ref const &) = default;
+        Matrix_ref &operator=(Matrix_ref const &) = default;
+        ~Matrix_ref() = default;
+
+        Matrix_ref(const Matrix_slice<1> &s, T *p) : ptr{p}
+        {
+            Matrix_base<T, 1>::desc = s;
+        }
+
+        // properties
+
+        virtual T *data() { return ptr; };
+        virtual const T *data() const { return ptr; };
+
+        // todo: subcripting access
+        T &row(size_t n)
+        {
+            assert(n < (Matrix_base<T, 1>::rows()));
+            // todo: desc access
+            // std::cerr << "(Matrix ref row: " << Matrix_base<T, N>::desc.start << ")";
+            return *(data() + Matrix_base<T, 1>::desc(n));
+        }
+
+        T &operator[](size_t n) { return row(n); }
+
+        template <typename... Dims>
+        Enable_if<Matrix_impl::Requesting_element<Dims...>(), T &> &operator()(Dims... dims)
+        {
+            assert(Matrix_impl::check_bounds(Matrix_base<T, 1>::desc, dims...));
+            return *(data() + Matrix_base<T, 1>::desc(dims...));
+        }
+        // todo: implement iterators
+    };
+
+    template <typename T>
+    class Matrix_ref<T, 0> : public Matrix_base<T, 0>
+    {
+    private:
+        T *ptr; // The pointer to original elements
+    public:
+        // default constructors
+        Matrix_ref() = default;
+        Matrix_ref(Matrix_ref &&) = default;
+        Matrix_ref &operator=(Matrix_ref &&) = default;
+        Matrix_ref(Matrix_ref const &) = default;
+        Matrix_ref &operator=(Matrix_ref const &) = default;
+        ~Matrix_ref() = default;
+
+        Matrix_ref(const Matrix_slice<0> &s, T *p) : ptr{p}
+        {
+            Matrix_base<T, 0>::desc = s;
+        }
+
+        Matrix_ref(const T &x) = delete;
+        Matrix_ref &operator=(const T &value)
+        {
+            *(data() + Matrix_base<T, 0>::desc.start) = value;
+            return *this;
+        }
+
+        // properties
+
+        virtual T *data() { return ptr; };
+        virtual const T *data() const { return ptr; };
+
+        // todo: subcripting access
+        T &row()
+        {
+            // std::cerr << "(Matrix ref row: " << Matrix_base<T, 0>::desc.start << ")";
+            return *(data() + Matrix_base<T, 0>::desc.start);
+        }
+
+        T &operator()() { return *(data() + Matrix_base<T, 0>::desc.start); }
+        const T &operator()() const { return *(data() + Matrix_base<T, 0>::desc.start); }
+
+        operator T &() { return *(data() + Matrix_base<T, 0>::desc.start); }
+        operator const T &() { return *(data() + Matrix_base<T, 0>::desc.start); }
+    };
+
     template <typename T, size_t N>
     class Matrix : public Matrix_base<T, N>
+    {
+    protected:
+        std::vector<T> elems; // storing the elements of the matrix
+
+    public:
+        // variable properties
+        using value_type = T;
+        using iterator = typename std::vector<T>::iterator;
+        using const_iterator = typename std::vector<T>::const_iterator;
+
+        // default constructors
+        Matrix() = default;
+        Matrix(Matrix &&) = default; // Move constructor
+        Matrix &operator=(Matrix &&) = default;
+        Matrix(Matrix const &) = default;
+        Matrix &operator=(Matrix const &) = default;
+        ~Matrix() = default;
+
+        /**
+         * @brief Construct a new Matrix object by specifying the extents.
+         * @todo solve problematic definition
+         *
+         * @tparam Exts
+         * @param exts
+         */
+        template <typename... Exts>
+        explicit Matrix(Exts... exts)
+        {
+            // std::cerr << "Matrix(Exts constructor) Entered." << std::endl;
+            Matrix_base<T, N>::desc = Matrix_slice<N>{exts...};
+            // std::cerr << "Matrix(Exts constructor): Slice created." << std::endl;
+            Matrix_base<T, N>::desc.init_full_dim();
+            // std::cerr << "Matrix(Exts constructor): Dimension initialized. The target size is " << Matrix_base<T, N>::desc.size << std::endl;
+            elems.resize(Matrix_base<T, N>::desc.size);
+        }
+
+        /**
+         * @brief Construct a new Matrix object using list-initialized constructor.
+         *
+         * @param init
+         * @note
+         * Rules:
+         * If either a default constructor or an initializer-list constructor could be invoked, prefer the default constructor.
+         * If both an initializer-list constructor and an "ordinary constructor" could be invoked, prefer the initializer-list constructor.
+         */
+        Matrix(Matrix_initializer<T, N> init)
+        {
+            Matrix_base<T, N>::desc.extents = Matrix_impl::derive_extents<N>(init);
+            Matrix_base<T, N>::desc.recalc_size();
+            Matrix_base<T, N>::desc.init_full_dim();
+            elems.reserve(Matrix_base<T, N>::desc.size);
+            Matrix_impl::insert_flat(init, elems);
+            assert((elems.size() == Matrix_base<T, N>::desc.size));
+        }
+
+        // Disallow the usage of direct initialize except for elements.
+        // template <typename U>
+        // Matrix(std::initializer_list<U>) = delete;
+        // template <typename U>
+        // Matrix &operator=(std::initializer_list<U>) = delete;
+
+        // Properties
+
+        // "flat" element access
+        virtual T *data() { return elems.data(); };
+        virtual const T *data() const { return elems.data(); };
+
+        // todo: subcripting access
+        Matrix_ref<T, N - 1> row(size_t n)
+        {
+            assert(n < (Matrix_base<T, N>::rows()));
+            Matrix_slice<N - 1> row;
+            Matrix_impl::slice_dim<0>(n, Matrix_base<T, N>::desc, row);
+            // std::cerr << "(Matrix src row: " << Matrix_base<T, N>::desc.start << ")";
+            return Matrix_ref<T, N - 1>(row, data());
+        }
+
+        Matrix_ref<T, N - 1> operator[](size_t n) { return row(n); }
+
+        template <typename... Dims>
+        Enable_if<Matrix_impl::Requesting_element<Dims...>(), T &> operator()(Dims... dims)
+        {
+            assert(Matrix_impl::check_bounds(Matrix_base<T, N>::desc, dims...));
+            return *(data() + Matrix_base<T, N>::desc(dims...));
+        }
+
+        // todo: Do specialization when N == 1
+        // todo: copy implementation to Matrix_ref class
+
+        // todo: arithemtic operations
+        // template <typename F>
+        // Matrix<T, N> apply(F f)
+        // {
+        //     for ()
+        // }
+    };
+
+    template <typename T>
+    class Matrix<T, 1> : public Matrix_base<T, 1>
     {
     protected:
         std::vector<T> elems;
@@ -417,7 +716,13 @@ namespace utils
          * @param exts
          */
         template <typename... Exts>
-        explicit Matrix(Exts... exts) : Matrix_base<T, N>::desc{exts...}, elems{Matrix_base<T, N>::desc.size} {}
+        explicit Matrix(Exts... exts)
+        {
+            // std::cerr << "Matrix(Exts constructor)" << std::endl;
+            Matrix_base<T, 1>::desc = Matrix_slice<1>(exts...);
+            Matrix_base<T, 1>::desc.init_full_dim();
+            elems.resize(Matrix_base<T, 1>::desc.size);
+        }
 
         /**
          * @brief Construct a new Matrix object using list-initialized constructor.
@@ -428,13 +733,14 @@ namespace utils
          * If either a default constructor or an initializer-list constructor could be invoked, prefer the default constructor.
          * If both an initializer-list constructor and an "ordinary constructor" could be invoked, prefer the initializer-list constructor.
          */
-        Matrix(Matrix_initializer<T, N> init)
+        Matrix(Matrix_initializer<T, 1> init)
         {
-            Matrix_base<T, N>::desc.extents = Matrix_impl::derive_extents<N>(init);
-            Matrix_base<T, N>::desc.norm_by_extents();
-            elems.reserve(Matrix_base<T, N>::desc.size);
+            Matrix_base<T, 1>::desc.extents = Matrix_impl::derive_extents<1>(init);
+            Matrix_base<T, 1>::desc.recalc_size();
+            Matrix_base<T, 1>::desc.init_full_dim();
+            elems.reserve(Matrix_base<T, 1>::desc.size);
             Matrix_impl::insert_flat(init, elems);
-            assert((elems.size() == Matrix_base<T, N>::desc.size));
+            assert((elems.size() == Matrix_base<T, 1>::desc.size));
         }
 
         // Disallow the usage of direct initialize except for elements.
@@ -450,18 +756,51 @@ namespace utils
         virtual const T *data() const { return elems.data(); };
 
         // todo: subcripting access
+
+        T &row(size_t n)
+        {
+            assert(n < (Matrix_base<T, 1>::rows()));
+            // todo: desc access
+            // std::cerr << "(Matrix ref row: " << Matrix_base<T, N>::desc.start << ")";
+            return *(data() + Matrix_base<T, 1>::desc(n));
+        }
+
+        T &operator[](size_t n) { return row(n); }
+
+        template <typename... Dims>
+        Enable_if<Matrix_impl::Requesting_element<Dims...>(), T &> operator()(Dims... dims)
+        {
+            assert(Matrix_impl::check_bounds(Matrix_base<T, 1>::desc, dims...));
+            return *(data() + Matrix_base<T, 1>::desc(dims...));
+        }
+
         // todo: Do specializations when N == 1
         // todo: copy implementation to Matrix_ref class
+
+        // todo: arithemtic operations
+        // template <typename F>
+        // Matrix<T, N> apply(F f)
+        // {
+        //     for ()
+        // }
     };
 
     template <typename T>
-    class Matrix<T, 0>
+    class Matrix<T, 0> : Matrix_base<T, 0>
     {
     private:
         T elem;
 
     public:
         using value_type = T;
+
+        // default constructors
+        Matrix() = default;
+        Matrix(Matrix &&) = default; // Move constructor
+        Matrix &operator=(Matrix &&) = default;
+        Matrix(Matrix const &) = default;
+        Matrix &operator=(Matrix const &) = default;
+        ~Matrix() = default;
 
         Matrix(const T &x) : elem(x) {}
         Matrix &operator=(const T &value)
@@ -470,10 +809,22 @@ namespace utils
             return *this;
         }
 
+        static constexpr size_t order() { return 0; };
+
+        // properties
+
+        // "flat" element access
+        virtual T *data() { return &elem; };
+        virtual const T *data() const { return &elem; };
+
+        T &row() { return elem; }
+        const T &row() const { return elem; }
+
         T &operator()() { return elem; }
         const T &operator()() const { return elem; }
 
-        static constexpr size_t order() { return 0; };
+        operator T &() { return elem; }
+        operator const T &() { return elem; }
     };
 
 };
