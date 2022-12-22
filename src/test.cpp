@@ -23,7 +23,7 @@ void test_template_constructors()
         {2, 1, 5, 7}};
     for (int i = 0; i < mat.size(); ++i)
     {
-        std::cout << "OK, element " << i << " is " << *(mat.data() + i) << endl;
+        cout << "OK, element " << i << " is " << *(mat.data() + i) << endl;
     }
 
     cout << "The row is " << mat.rows() << endl;
@@ -37,7 +37,7 @@ void test_template_constructors()
 
     for (int i = 0; i < mat2.size(); ++i)
     {
-        std::cout << "OK, element " << i << " is " << *(mat2.data() + i) << endl;
+        cout << "OK, element " << i << " is " << *(mat2.data() + i) << endl;
     }
     assert((mat2[1][2][1] == 17));
     mat2[1][2][1] = 2333;
@@ -80,6 +80,11 @@ void test_template_constructors()
 
     cout << "Test reference iterator\n";
     for (auto &i : mat2[2])
+        cout << "Iterator test: " << i << "\n";
+    cout << "========>OK.\n";
+
+    cout << "Test Column reference iterator\n";
+    for (auto &i : mat2.column(1))
         cout << "Iterator test: " << i << "\n";
     cout << "========>OK.\n";
 

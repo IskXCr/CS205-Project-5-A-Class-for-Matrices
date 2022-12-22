@@ -73,6 +73,20 @@ namespace utils
         return b && All(args...);
     }
 
+    constexpr bool Some() { return false; }
+
+    template <typename... Args>
+    constexpr bool Some(bool b, Args... args)
+    {
+        return b || Some(args...);
+    }
+
+    template <typename T, typename T2>
+    constexpr bool Same()
+    {
+        return std::is_same<T, T2>();
+    }
+
     // ------------------------------
     // Declarations
 
@@ -87,6 +101,8 @@ namespace utils
 
     template <typename T, size_t N>
     class Matrix;
+
+    struct Slice;
 
     // ------------------------------
 
@@ -222,11 +238,11 @@ namespace utils
             return All(Convertible<Args, size_t>()...);
         }
 
-        // template <typename... Args>
-        // constexpr bool Requesting_slice()
-        // {
-        //     return All((Convertible<Args, size_t>() || Same<Args, slice>())...) && Some(Same<Args, slice>()...);
-        // }
+        template <typename... Args>
+        constexpr bool Requesting_slice()
+        {
+            return All((Convertible<Args, size_t>() || Same<Args, Slice>())...) && Some(Same<Args, Slice>()...);
+        }
 
         /**
          * @brief Check whether the given dims is out of bound for a descriptor of a `Mat` object.
@@ -255,29 +271,45 @@ namespace utils
          * @param slice
          */
         template <size_t Dim, size_t N>
-        void slice_dim(size_t n, Matrix_slice<N> &desc, Matrix_slice<N - 1> &slice)
+        void slice_dim(size_t n, Matrix_slice<N> &src, Matrix_slice<N - 1> &dest)
         {
-            // static_assert(Dim == 1 || Dim == 0, "slice_dim: wrong argument.");
+            static_assert(Dim == 1 || Dim == 0, "slice_dim: wrong argument.");
             // debug support
-            static_assert(Dim == 0, "slice_dim: wrong argument.");
+            // static_assert(Dim == 0, "slice_dim: wrong argument.");
 
             // todo: slice_dim implementation
             if (Dim == 0)
             {
-                slice.start = desc.start + n * desc.strides[0];
-                if (desc.extents.size() > 1)
+                dest.start = src.start + n * src.strides[0];
+                if (src.extents.size() > 1)
                 {
-                    for (auto i = desc.extents.begin() + 1, j = slice.extents.begin(); i != desc.extents.end(); ++i, ++j)
-                        *j = *i;
-                    for (auto i = desc.strides.begin() + 1, j = slice.strides.begin(); i != desc.strides.end(); ++i, ++j)
-                        *j = *i;
+                    // for (auto i = src.extents.begin() + 1, j = dest.extents.begin(); i != src.extents.end(); ++i, ++j)
+                    //     *j = *i;
+                    // for (auto i = src.strides.begin() + 1, j = dest.strides.begin(); i != src.strides.end(); ++i, ++j)
+                    //     *j = *i;
+                    for (size_t i = 1; i < N; ++i)
+                    {
+                        dest.extents[i - 1] = src.extents[i];
+                        dest.strides[i - 1] = src.strides[i];
+                    }
                 }
-                slice.recalc_size();
+                dest.recalc_size();
             }
             else
             {
                 // todo: finish slice_col
-                assert(1);
+                dest.start = src.start + n * src.strides[1];
+                if (src.extents.size() > 1)
+                {
+                    dest.extents[0] = dest.extents[0];
+                    dest.strides[0] = src.strides[0];
+                    for (size_t i = 2; i < N; ++i)
+                    {
+                        dest.extents[i - 1] = src.extents[i];
+                        dest.strides[i - 1] = src.strides[i];
+                    }
+                }
+                dest.recalc_size();
             }
         }
 
@@ -287,10 +319,37 @@ namespace utils
             return a.extents == b.extents;
         }
 
+        // template <size_t N, typename T, typename... Dims>
+        // size_t do_slice(const Matrix_slice<N> &source, const Matrix_slice<N> &target, const T &s, Dims &...dims)
+        // {
+        //     size_t m = do_slice_dim<sizeof...(Dims) + 1>(source, target, s);
+        //     size_t n = do_slice(source, target, dims...);
+        //     return m + n;
+        // }
+
+        // template <size_t N>
+        // size_t do_slice(const Matrix_slice<N> &source, const Matrix_slice<N> &target)
+        // {
+        //     return 0;
+        // }
     };
 
     template <typename T, size_t N>
     using Matrix_initializer = typename Matrix_impl::Matrix_init<T, N>::type;
+
+    struct Slice
+    {
+        // todo: finish direct slice design
+        size_t start;
+        size_t length;
+        size_t stride;
+
+        Slice() : start(-1), length(-1), stride(1) {}
+        explicit Slice(size_t s) : start(s), length(-1), stride(1) {}
+        Slice(size_t s, size_t l, size_t n = 1) : start(s), length(l), stride(n) {}
+
+        size_t operator()(size_t i) const { return start + i * stride; }
+    };
 
     /**
      * @brief Class that contains critical access information for class `Matrix_ref` and `Matrix`.
@@ -517,6 +576,14 @@ namespace utils
             Matrix_impl::slice_dim<0>(n, Matrix_base<T, N>::desc, row);
             // std::cerr << "(Matrix ref row: " << Matrix_base<T, N>::desc.start << ")";
             return Matrix_ref<T, N - 1>(row, data());
+        }
+
+        Matrix_ref<T, N - 1> column(size_t n)
+        {
+            assert(n < (Matrix_base<T, N>::columns()));
+            Matrix_slice<N - 1> column;
+            Matrix_impl::slice_dim<1>(n, Matrix_base<T, N>::desc, column);
+            return Matrix_ref<T, N - 1>(column, data());
         }
 
         Matrix_ref<T, N - 1> operator[](size_t n) { return row(n); }
@@ -1284,6 +1351,14 @@ namespace utils
             return Matrix_ref<T, N - 1>(row, data());
         }
 
+        Matrix_ref<T, N - 1> column(size_t n)
+        {
+            assert(n < (Matrix_base<T, N>::columns()));
+            Matrix_slice<N - 1> column;
+            Matrix_impl::slice_dim<1>(n, Matrix_base<T, N>::desc, column);
+            return Matrix_ref<T, N - 1>(column, data());
+        }
+
         Matrix_ref<T, N - 1> operator[](size_t n) { return row(n); }
 
         template <typename... Dims>
@@ -1292,6 +1367,15 @@ namespace utils
             assert(Matrix_impl::check_bounds(Matrix_base<T, N>::desc, dims...));
             return *(data() + Matrix_base<T, N>::desc(dims...));
         }
+
+        // template <typename... Dims>
+        // Enable_if<Matrix_impl::Requesting_slice<Dims...>(), Matrix_ref<T, N>> operator()(const Dims &...dims)
+        // {
+        //     Matrix_slice<N> d;
+        //     d.start = Matrix_impl::do_slice(Matrix_base<T, N>::desc, d, dims...);
+        //     d.recalc_size();
+        //     return Matrix_ref{d, data()};
+        // }
 
         // iterator
         iterator begin() { return elems.begin(); }
@@ -1364,7 +1448,6 @@ namespace utils
             res += val;
             return res;
         }
-
     };
 
     template <typename T>
