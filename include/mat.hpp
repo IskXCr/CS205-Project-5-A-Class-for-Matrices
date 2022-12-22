@@ -277,6 +277,7 @@ namespace utils
             else
             {
                 // todo: finish slice_col
+                assert(1);
             }
         }
 
@@ -470,7 +471,7 @@ namespace utils
         size_t size() const { return desc.size; }
         const Matrix_slice<N> descriptor() const { return desc; }
 
-        // Arithmeticstemplate <typename F>
+        // Arithmetics template <typename F>
     };
 
     /**
